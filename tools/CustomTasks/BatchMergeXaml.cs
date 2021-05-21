@@ -3,7 +3,7 @@
 
 // This is no test coverage for BatchMergeXaml, MergedDictionary and StripNamespaces.
 // Please manually verify them if you make change on it. For example, checkout the buildoutput intermediate files 
-// and do the comparision between 19h1_generic_2dot5.prefixed.xaml and 19h1_generic_2dot5.xaml 
+// and do the comparision between 19h1_generic_v1.prefixed.xaml and 19h1_generic_v1.xaml 
 
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
@@ -81,7 +81,7 @@ namespace CustomTasks
                 {
                     if (!string.IsNullOrEmpty(PagesFilteredBy) && !item.GetMetadata(PagesFilteredBy).Equals("true", StringComparison.OrdinalIgnoreCase))
                     {
-                        Log.LogMessage(MessageImportance.Low, "Filtered item " + item.ItemSpec);
+                        this.LogMessage(MessageImportance.Low, "Filtered item " + item.ItemSpec);
                         continue;
                     }
 
@@ -92,7 +92,7 @@ namespace CustomTasks
                     }
                     else
                     {
-                        Log.LogError("Can't find page file " + file);
+                        this.LogError("Can't find page file " + file);
                     }
                 }
             }
@@ -103,7 +103,7 @@ namespace CustomTasks
 
         private void MergeAndGenerateXaml(MergedDictionary mergedDictionary, List<string> files, string targetOSVersion, int apiVersion)
         {
-            Log.LogMessage("Merge and generate xaml Files for target os" + targetOSVersion);
+            this.LogMessage("Merge and generate xaml Files for target os" + targetOSVersion);
 
             foreach (string file in files)
             {
@@ -113,7 +113,7 @@ namespace CustomTasks
                 }
                 catch (Exception)
                 {
-                    Log.LogError("Exception found when merge file " + file);
+                    this.LogError("Exception found when merge file " + file);
                     throw;
                 }
             }
@@ -138,12 +138,12 @@ namespace CustomTasks
         {
             if (string.IsNullOrEmpty(OutputDirectory) || !Directory.Exists(OutputDirectory))
             {
-                Log.LogError("OutputDirectory is empty or not existing");
+                this.LogError("OutputDirectory is empty or not existing");
             }
 
             if (string.IsNullOrEmpty(PostfixForGeneratedFile))
             {
-                Log.LogError("PostfixForGeneratedFile is empty");
+                this.LogError("PostfixForGeneratedFile is empty");
             }
 
             postfixForPrefixedGeneratedFile = PostfixForGeneratedFile + ".prefixed";

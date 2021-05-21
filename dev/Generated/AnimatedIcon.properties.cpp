@@ -14,6 +14,7 @@ namespace winrt::Microsoft::UI::Xaml::Controls
 #include "AnimatedIcon.g.cpp"
 
 GlobalDependencyProperty AnimatedIconProperties::s_FallbackIconSourceProperty{ nullptr };
+GlobalDependencyProperty AnimatedIconProperties::s_MirroredWhenRightToLeftProperty{ nullptr };
 GlobalDependencyProperty AnimatedIconProperties::s_SourceProperty{ nullptr };
 GlobalDependencyProperty AnimatedIconProperties::s_StateProperty{ nullptr };
 
@@ -35,15 +36,26 @@ void AnimatedIconProperties::EnsureProperties()
                 ValueHelper<winrt::IconSource>::BoxedDefaultValue(),
                 winrt::PropertyChangedCallback(&OnFallbackIconSourcePropertyChanged));
     }
+    if (!s_MirroredWhenRightToLeftProperty)
+    {
+        s_MirroredWhenRightToLeftProperty =
+            InitializeDependencyProperty(
+                L"MirroredWhenRightToLeft",
+                winrt::name_of<bool>(),
+                winrt::name_of<winrt::AnimatedIcon>(),
+                false /* isAttached */,
+                ValueHelper<bool>::BoxedDefaultValue(),
+                winrt::PropertyChangedCallback(&OnMirroredWhenRightToLeftPropertyChanged));
+    }
     if (!s_SourceProperty)
     {
         s_SourceProperty =
             InitializeDependencyProperty(
                 L"Source",
-                winrt::name_of<winrt::IRichAnimatedVisualSource>(),
+                winrt::name_of<winrt::IAnimatedVisualSource2>(),
                 winrt::name_of<winrt::AnimatedIcon>(),
                 false /* isAttached */,
-                ValueHelper<winrt::IRichAnimatedVisualSource>::BoxedDefaultValue(),
+                ValueHelper<winrt::IAnimatedVisualSource2>::BoxedDefaultValue(),
                 winrt::PropertyChangedCallback(&OnSourcePropertyChanged));
     }
     if (!s_StateProperty)
@@ -54,7 +66,7 @@ void AnimatedIconProperties::EnsureProperties()
                 winrt::name_of<winrt::hstring>(),
                 winrt::name_of<winrt::AnimatedIcon>(),
                 true /* isAttached */,
-                ValueHelper<winrt::hstring>::BoxValueIfNecessary(L"Normal"),
+                ValueHelper<winrt::hstring>::BoxedDefaultValue(),
                 &AnimatedIcon::OnAnimatedIconStatePropertyChanged);
     }
 }
@@ -62,6 +74,7 @@ void AnimatedIconProperties::EnsureProperties()
 void AnimatedIconProperties::ClearProperties()
 {
     s_FallbackIconSourceProperty = nullptr;
+    s_MirroredWhenRightToLeftProperty = nullptr;
     s_SourceProperty = nullptr;
     s_StateProperty = nullptr;
 }
@@ -72,6 +85,14 @@ void AnimatedIconProperties::OnFallbackIconSourcePropertyChanged(
 {
     auto owner = sender.as<winrt::AnimatedIcon>();
     winrt::get_self<AnimatedIcon>(owner)->OnFallbackIconSourcePropertyChanged(args);
+}
+
+void AnimatedIconProperties::OnMirroredWhenRightToLeftPropertyChanged(
+    winrt::DependencyObject const& sender,
+    winrt::DependencyPropertyChangedEventArgs const& args)
+{
+    auto owner = sender.as<winrt::AnimatedIcon>();
+    winrt::get_self<AnimatedIcon>(owner)->OnMirroredWhenRightToLeftPropertyChanged(args);
 }
 
 void AnimatedIconProperties::OnSourcePropertyChanged(
@@ -95,17 +116,30 @@ winrt::IconSource AnimatedIconProperties::FallbackIconSource()
     return ValueHelper<winrt::IconSource>::CastOrUnbox(static_cast<AnimatedIcon*>(this)->GetValue(s_FallbackIconSourceProperty));
 }
 
-void AnimatedIconProperties::Source(winrt::IRichAnimatedVisualSource const& value)
+void AnimatedIconProperties::MirroredWhenRightToLeft(bool value)
 {
     [[gsl::suppress(con)]]
     {
-    static_cast<AnimatedIcon*>(this)->SetValue(s_SourceProperty, ValueHelper<winrt::IRichAnimatedVisualSource>::BoxValueIfNecessary(value));
+    static_cast<AnimatedIcon*>(this)->SetValue(s_MirroredWhenRightToLeftProperty, ValueHelper<bool>::BoxValueIfNecessary(value));
     }
 }
 
-winrt::IRichAnimatedVisualSource AnimatedIconProperties::Source()
+bool AnimatedIconProperties::MirroredWhenRightToLeft()
 {
-    return ValueHelper<winrt::IRichAnimatedVisualSource>::CastOrUnbox(static_cast<AnimatedIcon*>(this)->GetValue(s_SourceProperty));
+    return ValueHelper<bool>::CastOrUnbox(static_cast<AnimatedIcon*>(this)->GetValue(s_MirroredWhenRightToLeftProperty));
+}
+
+void AnimatedIconProperties::Source(winrt::IAnimatedVisualSource2 const& value)
+{
+    [[gsl::suppress(con)]]
+    {
+    static_cast<AnimatedIcon*>(this)->SetValue(s_SourceProperty, ValueHelper<winrt::IAnimatedVisualSource2>::BoxValueIfNecessary(value));
+    }
+}
+
+winrt::IAnimatedVisualSource2 AnimatedIconProperties::Source()
+{
+    return ValueHelper<winrt::IAnimatedVisualSource2>::CastOrUnbox(static_cast<AnimatedIcon*>(this)->GetValue(s_SourceProperty));
 }
 
 

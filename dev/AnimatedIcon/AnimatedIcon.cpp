@@ -19,13 +19,18 @@ AnimatedIcon::AnimatedIcon()
     __RP_Marker_ClassById(RuntimeProfiler::ProfId_AnimatedIcon);
     m_progressPropertySet = winrt::Window::Current().Compositor().CreatePropertySet();
     m_progressPropertySet.InsertScalar(s_progressPropertyName, 0);
+    Loaded({ this, &AnimatedIcon::OnLoaded });
 
     RegisterPropertyChangedCallback(winrt::IconElement::ForegroundProperty(), { this, &AnimatedIcon::OnForegroundPropertyChanged});
+    RegisterPropertyChangedCallback(winrt::FrameworkElement::FlowDirectionProperty(), { this, &AnimatedIcon::OnFlowDirectionPropertyChanged });
 }
 
 void AnimatedIcon::OnApplyTemplate()
 {
     __super::OnApplyTemplate();
+    // Construct the visual from the Source property in on apply template so that it participates
+    // in the initial measure for the object.
+    ConstructAndInsertVisual();
     auto const panel = winrt::VisualTreeHelper::GetChild(*this, 0).as<winrt::Panel>();
     m_rootPanel.set(panel);
     m_currentState = GetState(*this);
@@ -33,15 +38,65 @@ void AnimatedIcon::OnApplyTemplate()
     if (panel)
     {
         // Animated icon implements IconElement through PathIcon. We don't need the Path that
-        // PathIcon creates, so get rid of it.
-        panel.Children().Clear();
-        OnFallbackIconSourcePropertyChanged(nullptr);
+        // PathIcon creates, however when you set the foreground on AnimatedIcon, it assumes
+        // its grid's first child has a fill property which it sets by known index. So we
+        // keep this child around but collapse it so this behavior doesn't crash us when the
+        // fallback is used.
+        if (panel.Children().Size() > 0)
+        {
+            if (auto const path = panel.Children().GetAt(0))
+            {
+                path.Visibility(winrt::Visibility::Collapsed);
+            }
+        }
         if (auto const visual = m_animatedVisual.get())
         {
             winrt::ElementCompositionPreview::SetElementChildVisual(panel, visual.RootVisual());
         }
+
+        TrySetForegroundProperty();
     }
 }
+
+void AnimatedIcon::OnLoaded(winrt::IInspectable const&, winrt::RoutedEventArgs const&)
+{
+    // AnimatedIcon might get added to a UI which has already set the State property on an ancestor.
+    // If this is the case and the animated icon being added doesn't have its own state property
+    // We copy the ancestor value when we load. Additionally we attach to our ancestor's property
+    // changed event for AnimatedIcon.State to copy the value to AnimatedIcon.
+    auto const property = winrt::AnimatedIcon::StateProperty();
+
+    auto const [ancestorWithState, stateValue] = [this, property]()
+    {
+        auto parent = winrt::VisualTreeHelper::GetParent(*this);
+        while (parent)
+        {
+            auto const stateValue = parent.GetValue(property);
+            if (!unbox_value<winrt::hstring>(stateValue).empty())
+            {
+                return std::make_tuple(parent, stateValue);
+            }
+            parent = winrt::VisualTreeHelper::GetParent(parent);
+        }
+        return std::make_tuple(static_cast<winrt::DependencyObject>(nullptr), winrt::box_value(winrt::hstring{}));
+    }();
+
+    if (unbox_value<winrt::hstring>(GetValue(property)).empty())
+    {
+        SetValue(property, stateValue);
+    }
+
+    if (ancestorWithState)
+    {
+        m_ancestorStatePropertyChangedRevoker = RegisterPropertyChanged(ancestorWithState, property, { this, &AnimatedIcon::OnAncestorAnimatedIconStatePropertyChanged });
+    }
+
+    // Wait until loaded to apply the fallback icon source property because we need the icon source
+    // properties to be set before we create the icon element from it.  If those poperties are bound in,
+    // they will not have been set during OnApplyTemplate.
+    OnFallbackIconSourcePropertyChanged(nullptr);
+}
+
 
 winrt::Size AnimatedIcon::MeasureOverride(winrt::Size const& availableSize)
 {
@@ -110,11 +165,10 @@ winrt::Size AnimatedIcon::ArrangeOverride(winrt::Size const& finalSize)
             std::min(finalSize.Height / scale.y, visualSize.y)
         };
         const auto offset = (finalSize - (visualSize * scale)) / 2;
-        const auto z = 0.0F;
         const auto rootVisual = visual.RootVisual();
-        rootVisual.Offset({ offset, z });
+        rootVisual.Offset({ offset, 0.0f });
         rootVisual.Size(arrangedSize);
-        rootVisual.Scale({ scale, z });
+        rootVisual.Scale({ scale, 1.0f });
         return finalSize;
     }
     else
@@ -131,13 +185,13 @@ void AnimatedIcon::OnAnimatedIconStatePropertyChanged(
     {
         senderAsAnimatedIcon->OnStatePropertyChanged();
     }
-    else if (winrt::VisualTreeHelper::GetChildrenCount(sender) > 0)
-    {
-        if (auto const childAsAnimatedIcon = winrt::VisualTreeHelper::GetChild(sender, 0).try_as<winrt::AnimatedIcon>())
-        {
-            childAsAnimatedIcon.SetValue(AnimatedIconProperties::s_StateProperty, args.NewValue());
-        }
-    }
+}
+
+void AnimatedIcon::OnAncestorAnimatedIconStatePropertyChanged(
+    const winrt::DependencyObject& sender,
+    const winrt::DependencyProperty& args)
+{
+    SetValue(AnimatedIconProperties::s_StateProperty, sender.GetValue(args));
 }
 
 // When we receive a state change it might be erroneous. This is because these state changes often come from Animated Icon's parent control's
@@ -150,7 +204,12 @@ void AnimatedIcon::OnStatePropertyChanged()
 {
     m_pendingState = ValueHelper<winrt::hstring>::CastOrUnbox(this->GetValue(AnimatedIconStateProperty()));
     m_layoutUpdatedRevoker = this->LayoutUpdated(winrt::auto_revoke, { this, &AnimatedIcon::OnLayoutUpdatedAfterStateChanged });
-    InvalidateArrange();
+    SharedHelpers::QueueCallbackForCompositionRendering(
+        [strongThis = get_strong()]
+        {
+            strongThis->InvalidateArrange();
+        }
+    );
 }
 
 void AnimatedIcon::OnLayoutUpdatedAfterStateChanged(winrt::IInspectable const& sender, winrt::IInspectable const& args)
@@ -381,13 +440,49 @@ void AnimatedIcon::PlaySegment(float from, float to, float playbackMultiplier)
 
 void AnimatedIcon::OnSourcePropertyChanged(const winrt::DependencyPropertyChangedEventArgs&)
 {
+    if(!ConstructAndInsertVisual())
+    {
+        SetRootPanelChildToFallbackIcon();
+    }
+}
+
+void AnimatedIcon::UpdateMirrorTransform()
+{
+    auto const scaleTransform = [this]()
+    {
+        if (!m_scaleTransform)
+        {
+            // Initialize the scale transform that will be used for mirroring and the
+            // render transform origin as center in order to have the icon mirrored in place.
+            winrt::Windows::UI::Xaml::Media::ScaleTransform scaleTransform;
+
+            RenderTransform(scaleTransform);
+            RenderTransformOrigin({ 0.5, 0.5 });
+            m_scaleTransform.set(scaleTransform);
+            return scaleTransform;
+        }
+        return m_scaleTransform.get();
+    }();
+
+
+    scaleTransform.ScaleX(FlowDirection() == winrt::FlowDirection::RightToLeft && !MirroredWhenRightToLeft() && m_canDisplayPrimaryContent ? -1.0f : 1.0f);
+}
+
+void AnimatedIcon::OnMirroredWhenRightToLeftPropertyChanged(const winrt::DependencyPropertyChangedEventArgs&)
+{
+    UpdateMirrorTransform();
+}
+
+bool AnimatedIcon::ConstructAndInsertVisual()
+{
     auto const visual = [this]()
     {
         if (auto const source = Source())
         {
             TrySetForegroundProperty(source);
 
-            auto const visual = source.TryCreateAnimatedIconVisual(winrt::Window::Current().Compositor());
+            winrt::IInspectable diagnostics{};
+            auto const visual = source.TryCreateAnimatedVisual(winrt::Window::Current().Compositor(), diagnostics);
             m_animatedVisual.set(visual);
             return visual ? visual.RootVisual() : nullptr;
         }
@@ -408,7 +503,12 @@ void AnimatedIcon::OnSourcePropertyChanged(const winrt::DependencyPropertyChange
         m_canDisplayPrimaryContent = true;
         if (auto const rootPanel = m_rootPanel.get())
         {
-            rootPanel.Children().Clear();
+            // Remove the second child, if it exists, as this is the fallback icon.
+            // Which we don't need because we have a visual now.
+            if (rootPanel.Children().Size() > 1)
+            {
+                rootPanel.Children().RemoveAt(1);
+            }
         }
         visual.Properties().InsertScalar(s_progressPropertyName, 0.0F);
 
@@ -418,12 +518,16 @@ void AnimatedIcon::OnSourcePropertyChanged(const winrt::DependencyPropertyChange
         auto const progressAnimation = compositor.CreateExpressionAnimation(expression);
         progressAnimation.SetReferenceParameter(L"_", m_progressPropertySet);
         visual.Properties().StartAnimation(s_progressPropertyName, progressAnimation);
+
+        return true;
     }
     else
     {
         m_canDisplayPrimaryContent = false;
-        SetRootPanelChildToFallbackIcon();
+        return false;
     }
+
+    UpdateMirrorTransform();
 }
 
 void AnimatedIcon::OnFallbackIconSourcePropertyChanged(const winrt::DependencyPropertyChangedEventArgs&)
@@ -438,10 +542,15 @@ void AnimatedIcon::SetRootPanelChildToFallbackIcon()
 {
     if (auto const iconSource = FallbackIconSource())
     {
-        auto const iconElement = SharedHelpers::MakeIconElementFrom(iconSource);
+        auto const iconElement = iconSource.CreateIconElement();
         if (auto const rootPanel = m_rootPanel.get())
         {
-            rootPanel.Children().Clear();
+            // Remove the second child, if it exists, as this is the previous
+            // fallback icon which we don't need because we have a visual now.
+            if (rootPanel.Children().Size() > 1)
+            {
+                rootPanel.Children().RemoveAt(1);
+            }
             rootPanel.Children().Append(iconElement);
         }
     }
@@ -449,17 +558,38 @@ void AnimatedIcon::SetRootPanelChildToFallbackIcon()
 
 void AnimatedIcon::OnForegroundPropertyChanged(const winrt::DependencyObject& sender, const winrt::DependencyProperty& args)
 {
-    TrySetForegroundProperty(Source());
+    m_foregroundColorPropertyChangedRevoker.revoke();
+    if (auto const foregroundSolidColorBrush = Foreground().try_as<winrt::SolidColorBrush>())
+    {
+        m_foregroundColorPropertyChangedRevoker = RegisterPropertyChanged(foregroundSolidColorBrush, winrt::SolidColorBrush::ColorProperty(), { this, &AnimatedIcon::OnForegroundBrushColorPropertyChanged });
+        TrySetForegroundProperty(foregroundSolidColorBrush.Color());
+    }
 }
 
-void AnimatedIcon::TrySetForegroundProperty(const winrt::IRichAnimatedVisualSource source)
+void AnimatedIcon::OnFlowDirectionPropertyChanged(const winrt::DependencyObject& sender, const winrt::DependencyProperty& args)
 {
-    if (source)
+    UpdateMirrorTransform();
+}
+
+void AnimatedIcon::OnForegroundBrushColorPropertyChanged(const winrt::DependencyObject& sender, const winrt::DependencyProperty& args)
+{
+    TrySetForegroundProperty(sender.GetValue(args).as<winrt::Color>());
+}
+
+void AnimatedIcon::TrySetForegroundProperty(winrt::IAnimatedVisualSource2 const& source)
+{
+    if (auto const foregroundSolidColorBrush = Foreground().try_as<winrt::SolidColorBrush>())
     {
-        if (auto const ForegroundSolidColorBrush = Foreground().try_as<winrt::SolidColorBrush>())
-        {
-            source.SetColorProperty(s_foregroundPropertyName, ForegroundSolidColorBrush.Color());
-        }
+        TrySetForegroundProperty(foregroundSolidColorBrush.Color(), source);
+    }
+}
+
+void AnimatedIcon::TrySetForegroundProperty(winrt::Color color, winrt::IAnimatedVisualSource2 const& source)
+{
+    auto const localSource = source ? source : Source();
+    if (localSource)
+    {
+        localSource.SetColorProperty(s_foregroundPropertyName, color);
     }
 }
 
